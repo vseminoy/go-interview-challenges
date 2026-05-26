@@ -7,17 +7,32 @@ import (
 	"fmt"
 )
 
+// Sentinel errors allow callers to distinguish failure reasons via errors.Is.
+var (
+	ErrInsufficientFunds = errors.New("insufficient funds")
+	ErrSameAccount       = errors.New("cannot transfer to self")
+	ErrInvalidAmount     = errors.New("invalid amount")
+	ErrAccountNotFound   = errors.New("one or both accounts not found")
+)
+
+// Store provides access to the accounts table.
 type Store struct {
 	db *sql.DB
 }
 
-func (s *Store) Transfer(ctx context.Context, fromID, toID int64, amount float64) error {
+// NewStore creates a Store backed by the given database connection pool.
+func NewStore(db *sql.DB) *Store {
+	return &Store{db: db}
+}
+
+// Transfer moves amount (in kopecks) from one account to another.
+func (s *Store) Transfer(ctx context.Context, fromID, toID int64, amount int64) error {
 	// 1. Validation
 	if fromID == toID {
-		return errors.New("cannot transfer to self")
+		return ErrSameAccount
 	}
 	if amount <= 0 {
-		return errors.New("invalid amount")
+		return ErrInvalidAmount
 	}
 
 	// 2. Transaction
@@ -58,15 +73,15 @@ func (s *Store) Transfer(ctx context.Context, fromID, toID int64, amount float64
 	}
 	defer rows.Close()
 
-	var fromBalance float64
+	var fromBalance int64
 	var foundFrom, foundTo bool
 
 	// We read both lines, blocked in strict order
 	for rows.Next() {
 		var id int64
-		var bal float64
+		var bal int64
 		if err := rows.Scan(&id, &bal); err != nil {
-			return err
+			return fmt.Errorf("failed to scan account row: %w", err)
 		}
 		if id == fromID {
 			fromBalance = bal
@@ -84,13 +99,13 @@ func (s *Store) Transfer(ctx context.Context, fromID, toID int64, amount float64
 
 	// We check that both accounts exist.
 	if !foundFrom || !foundTo {
-		return errors.New("one or both accounts not found")
+		return ErrAccountNotFound
 	}
 
 	// 4. Business logic
 	// The data is already current and blocked for other transactions.
 	if fromBalance < amount {
-		return errors.New("insufficient funds")
+		return ErrInsufficientFunds
 	}
 
 	// 5. Updates
